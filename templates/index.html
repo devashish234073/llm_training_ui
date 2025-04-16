@@ -58,7 +58,9 @@
             <tr>
               <th>Batch</th>
               <th>Input IDs</th>
+              <th>Input Tokens</th>
               <th>Target IDs</th>
+              <th>Target Tokens</th>
             </tr>
           </thead>
           <tbody id="dataloader-body"></tbody>
@@ -186,11 +188,17 @@
           batchCell.textContent = batch.batch;
           let inputCell = document.createElement("td");
           inputCell.textContent = JSON.stringify(batch.input_ids);
+          let inputCell2 = document.createElement("td");
+          inputCell2.textContent = JSON.stringify(batch.decoded_inputs);
           let targetCell = document.createElement("td");
           targetCell.textContent = JSON.stringify(batch.target_ids);
+          let targetCell2 = document.createElement("td");
+          targetCell2.textContent = JSON.stringify(batch.decoded_targets);
           row.appendChild(batchCell);
           row.appendChild(inputCell);
+          row.appendChild(inputCell2);
           row.appendChild(targetCell);
+          row.appendChild(targetCell2);
           tbody.appendChild(row);
         });
 

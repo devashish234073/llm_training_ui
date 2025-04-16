@@ -115,12 +115,17 @@ def create_dataloader():
         inputs, targets = batch
         inputs_list = inputs.tolist()
         targets_list = targets.tolist()
+        decoded_inputs = [tokenizer.decode(input_id_seq) for input_id_seq in inputs_list]
+        decoded_targets = [tokenizer.decode(target_id_seq) for target_id_seq in targets_list]
         dataloader_data.append({
             "batch": batch_idx,
             "input_ids": inputs_list,
-            "target_ids": targets_list
+            "target_ids": targets_list,
+            "decoded_inputs":decoded_inputs,
+            "decoded_targets":decoded_targets
         })
-        break
+        if batch_idx > 3:
+            break
 
     # Tokenizer-based vocabulary
     token_ids = tokenizer.encode(raw_text)
