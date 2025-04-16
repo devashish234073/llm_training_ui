@@ -72,7 +72,7 @@
           <table class="table table-bordered">
             <thead class="table-dark">
               <tr>
-                <th>Word</th>
+                <th>Token</th>
                 <th>Embedding Vector</th>
               </tr>
             </thead>
@@ -200,7 +200,7 @@
         data.embeddings.forEach(item => {
           let row = document.createElement("tr");
           let wordCell = document.createElement("td");
-          wordCell.textContent = item.word;
+          wordCell.textContent = item.token;
           let embedCell = document.createElement("td");
           // Convert embedding vector array to comma-separated string
           embedCell.textContent = item.embedding.join(", ");

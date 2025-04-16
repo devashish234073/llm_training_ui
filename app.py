@@ -6,7 +6,8 @@ from werkzeug.utils import secure_filename
 import torch
 from torch.utils.data import DataLoader, Dataset
 import tiktoken
-
+# Initialize the tokenizer
+tokenizer = tiktoken.get_encoding("gpt2")
 app = Flask(__name__)
 app.config['UPLOAD_FOLDER'] = 'uploads'
 os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
@@ -16,7 +17,7 @@ os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
 # Dataset and DataLoader Classes
 # -------------------------------
 class GPTDatasetV1(Dataset):
-    def __init__(self, txt, tokenizer, max_length, stride):
+    def __init__(self, txt, max_length, stride):
         self.input_ids = []
         self.target_ids = []
         token_ids = tokenizer.encode(txt)
@@ -35,11 +36,7 @@ class GPTDatasetV1(Dataset):
 
 def create_dataloader_v1(txt, batch_size, max_length, stride,
                          shuffle=True, drop_last=True, num_workers=0):
-    # Initialize the tokenizer
-    tokenizer = tiktoken.get_encoding("gpt2")
-    # Create dataset
-    dataset = GPTDatasetV1(txt, tokenizer, max_length, stride)
-    # Create dataloader
+    dataset = GPTDatasetV1(txt, max_length, stride)
     dataloader = DataLoader(
         dataset, batch_size=batch_size, shuffle=shuffle, drop_last=drop_last, num_workers=num_workers
     )
@@ -56,12 +53,10 @@ def index():
 
 @app.route('/upload', methods=['POST'])
 def upload():
-    # Get form inputs: file input and URL text field.
     file_obj = request.files.get("file_input")
     url_input = request.form.get("url_input")
     filename = ""
-    
-    # Determine file source and file path
+
     if file_obj and file_obj.filename:
         filename = secure_filename(file_obj.filename)
         file_path = os.path.join(app.config['UPLOAD_FOLDER'], filename)
@@ -72,34 +67,34 @@ def upload():
             filename = "downloaded_file.txt"
         filename = secure_filename(filename)
         file_path = os.path.join(app.config['UPLOAD_FOLDER'], filename)
-        # If file does not exist locally, download it
         if not os.path.exists(file_path):
             urllib.request.urlretrieve(url_input, file_path)
     else:
         return jsonify({"error": "No file or URL provided."}), 400
 
-    # Read file content
     try:
         with open(file_path, "r", encoding="utf-8") as f:
             raw_text = f.read()
     except Exception as e:
         return jsonify({"error": f"File read error: {str(e)}"}), 500
 
-    # Process file to extract vocabulary. Here, using a simple space-split.
-    preprocessed = raw_text.split()
-    all_words = sorted(set(preprocessed))
-    
-    # Return the raw content and vocabulary list to the frontend.
+    # Tokenizer-based vocabulary (token IDs)
+    token_ids = tokenizer.encode(raw_text)
+    unique_token_ids = sorted(set(token_ids))
+    decoded_tokens = [tokenizer.decode([tid]) for tid in unique_token_ids]
+
+    # Return raw text, decoded token vocab and token ids
     return jsonify({
         "raw_text": raw_text,
-        "vocab": all_words,
+        "vocab": decoded_tokens,
+        "token_ids": unique_token_ids,
         "file_path": file_path
     })
 
 
+
 @app.route('/create_dataloader', methods=['POST'])
 def create_dataloader():
-    # Retrieve parameters from the frontend (including the file path)
     file_path = request.form.get("file_path")
     try:
         with open(file_path, "r", encoding="utf-8") as f:
@@ -107,7 +102,6 @@ def create_dataloader():
     except Exception as e:
         return jsonify({"error": f"Could not read file: {str(e)}"}), 500
 
-    # Create dataloader using the provided configuration
     dataloader = create_dataloader_v1(
         raw_text,
         batch_size=8,
@@ -116,7 +110,6 @@ def create_dataloader():
         shuffle=False
     )
 
-    # Prepare visualization data: process one batch for demonstration
     dataloader_data = []
     for batch_idx, batch in enumerate(dataloader):
         inputs, targets = batch
@@ -129,27 +122,25 @@ def create_dataloader():
         })
         break
 
-    # Also compute the vocabulary and create embedding layers
-    preprocessed = raw_text.split()
-    all_words = sorted(set(preprocessed))
-    vocab_size = len(all_words)
-    output_dim = 16  # You can adjust this dimension as needed
+    # Tokenizer-based vocabulary
+    token_ids = tokenizer.encode(raw_text)
+    unique_token_ids = sorted(set(token_ids))
+    vocab_size = len(unique_token_ids)
+    output_dim = 3
 
     token_embedding_layer = torch.nn.Embedding(vocab_size, output_dim)
-    # pos_embedding_layer = torch.nn.Embedding(context_length, output_dim)
-
-    # Extract the weights from the embedding layer as a Python list
     embeddings_weight = token_embedding_layer.weight.detach().tolist()
 
-    # Map each vocabulary word to its embedding vector (assuming the order corresponds)
+    # Decode each token_id to a token string
+    decoded_tokens = [tokenizer.decode([tid]) for tid in unique_token_ids]
+
     embeddings = []
-    for word, vector in zip(all_words, embeddings_weight):
+    for tok_str, vector in zip(decoded_tokens, embeddings_weight):
         embeddings.append({
-            "word": word,
+            "token": tok_str,
             "embedding": vector
         })
 
-    # Return both dataloader visualization and embeddings info
     return jsonify({
         "dataloader": dataloader_data,
         "embeddings": embeddings
@@ -162,7 +153,6 @@ def tokenize():
     if not word:
         return jsonify({"error": "No word provided."}), 400
     try:
-        tokenizer = tiktoken.get_encoding("gpt2")
         # Tokenize the single word
         token_ids = tokenizer.encode(word)
         return jsonify({"token_ids": token_ids})
