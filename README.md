@@ -9,3 +9,5 @@ Steps to setup and launch
 4. python app.py
 5. visit http://127.0.0.1:5000/ in browser
 ```
+
+![image](https://github.com/user-attachments/assets/b796d74e-6518-4846-bca8-eb6ba0f491b7)
