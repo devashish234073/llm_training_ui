@@ -131,7 +131,10 @@ def create_dataloader():
     token_ids = tokenizer.encode(raw_text)
     unique_token_ids = sorted(set(token_ids))
     vocab_size = len(unique_token_ids)
-    output_dim = 3
+    print("vocab_size:", vocab_size)    
+    print("tokenizer.n_vocab:", tokenizer.n_vocab)
+    vocab_size = tokenizer.n_vocab
+    output_dim = 256
 
     token_embedding_layer = torch.nn.Embedding(vocab_size, output_dim)
     embeddings_weight = token_embedding_layer.weight.detach().tolist()
