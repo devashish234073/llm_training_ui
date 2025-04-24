@@ -112,7 +112,7 @@ def training_loop():
                     for i in range(len(tokens))
                 ]
 
-        socketio.emit("training_status", {"epoch": epoch + 1, "loss": total_loss / len(dataloader)})
+        socketio.emit("training_status", {"epoch": str(epoch + 1)+"/"+str(hyperparams["epochs"]), "loss": total_loss / len(dataloader)})
 
     torch.save(model.state_dict(), "simple_gpt.pth")
     socketio.emit("training_complete", {"message": "Training complete."})

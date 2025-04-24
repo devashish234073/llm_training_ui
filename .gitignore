@@ -1,1 +1,4 @@
 uploads
+uploaded_text.txt
+__pycache__
+*.pth
