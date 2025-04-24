@@ -1,172 +1,162 @@
+from flask import Flask, request, jsonify,send_file, render_template
+from flask_socketio import SocketIO, emit
 import os
 import urllib.request
-from flask import Flask, render_template, request, jsonify
-from werkzeug.utils import secure_filename
-
+import threading
 import torch
-from torch.utils.data import DataLoader, Dataset
-import tiktoken
-# Initialize the tokenizer
-tokenizer = tiktoken.get_encoding("gpt2")
+from model import generate_text, SimpleGPT, create_dataloader_v1, tokenizer
+import torch.nn.functional as F
+
 app = Flask(__name__)
-app.config['UPLOAD_FOLDER'] = 'uploads'
-os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
+socketio = SocketIO(app, cors_allowed_origins="*")
 
-
-# -------------------------------
-# Dataset and DataLoader Classes
-# -------------------------------
-class GPTDatasetV1(Dataset):
-    def __init__(self, txt, max_length, stride):
-        self.input_ids = []
-        self.target_ids = []
-        token_ids = tokenizer.encode(txt)
-        for i in range(0, len(token_ids) - max_length, stride):
-            input_chunk = token_ids[i : i + max_length]
-            target_chunk = token_ids[i + 1 : i + max_length + 1]
-            self.input_ids.append(torch.tensor(input_chunk))
-            self.target_ids.append(torch.tensor(target_chunk))
-
-    def __len__(self):
-        return len(self.input_ids)
-
-    def __getitem__(self, idx):
-        return self.input_ids[idx], self.target_ids[idx]
-
-
-def create_dataloader_v1(txt, batch_size, max_length, stride,
-                         shuffle=True, drop_last=True, num_workers=0):
-    dataset = GPTDatasetV1(txt, max_length, stride)
-    dataloader = DataLoader(
-        dataset, batch_size=batch_size, shuffle=shuffle, drop_last=drop_last, num_workers=num_workers
-    )
-    return dataloader
-
-
-# -------------------------------
-# Routes
-# -------------------------------
 @app.route('/')
 def index():
-    return render_template('index.html')
+    return render_template("index.html")
 
+# Hyperparameters
+hyperparams = {
+    "batch_size": 16,
+    "max_length": 128,
+    "stride": 64,
+    "embed_dim": 256,
+    "epochs": 10,
+    "lr": 3e-4,
+}
+device = "cuda" if torch.cuda.is_available() else "cpu"
+vocab_size = tokenizer.n_vocab
 
-@app.route('/upload', methods=['POST'])
-def upload():
-    file_obj = request.files.get("file_input")
-    url_input = request.form.get("url_input")
-    filename = ""
+# Global variables
+dataloader = None
+model = None
+embedding_info = []
 
-    if file_obj and file_obj.filename:
-        filename = secure_filename(file_obj.filename)
-        file_path = os.path.join(app.config['UPLOAD_FOLDER'], filename)
-        file_obj.save(file_path)
-    elif url_input:
-        filename = os.path.basename(url_input)
-        if not filename.strip():
-            filename = "downloaded_file.txt"
-        filename = secure_filename(filename)
-        file_path = os.path.join(app.config['UPLOAD_FOLDER'], filename)
-        if not os.path.exists(file_path):
-            urllib.request.urlretrieve(url_input, file_path)
-    else:
-        return jsonify({"error": "No file or URL provided."}), 400
+@app.route("/update_hyperparams", methods=["POST"])
+def update_hyperparams():
+    data = request.json
+    for k in hyperparams:
+        if k in data:
+            hyperparams[k] = type(hyperparams[k])(data[k])
+    return jsonify(hyperparams)
+
+@app.route("/upload_text", methods=["POST"])
+def upload_text():
+    file_path = "uploaded_text.txt"
+    uploaded_file = request.files.get("file")
+    url = request.form.get("url")
+
+    # Handle file upload with non-empty filename
+    if uploaded_file and uploaded_file.filename:
+        try:
+            content = uploaded_file.read().decode("utf-8")
+            with open(file_path, "w", encoding="utf-8") as f:
+                f.write(content)
+        except Exception as e:
+            return f"Failed to process uploaded file: {str(e)}", 500
+
+    # Fallback to URL download
+    elif url:
+        try:
+            print(f"Downloading file from URL: {url}")
+            urllib.request.urlretrieve(url, file_path)
+        except Exception as e:
+            return f"Failed to download file from URL: {str(e)}", 500
+
+    with open(file_path, "r", encoding="utf-8") as f:
+        raw_text = f.read()
+
+    global dataloader
+    dataloader = create_dataloader_v1(raw_text, hyperparams["batch_size"])
+    if dataloader is None:
+        return "Failed to create dataloader", 500
+    print(f"dataloader length = {len(dataloader)}")
+    return "File processed and dataloader created", 200
+
+@app.route("/train", methods=["POST"])
+def train_model():
+    thread = threading.Thread(target=training_loop)
+    thread.start()
+    return "Training started", 200
+
+def training_loop():
+    global model, embedding_info
+    model = SimpleGPT().to(device)
+    optimizer = torch.optim.AdamW(model.parameters(), lr=hyperparams["lr"])
+    criterion = torch.nn.CrossEntropyLoss()
+
+    for epoch in range(hyperparams["epochs"]):
+        model.train()
+        total_loss = 0
+        for input_ids, target_ids in dataloader:
+            input_ids = input_ids.to(device)
+            target_ids = target_ids.to(device)
+
+            optimizer.zero_grad()
+            logits = model(input_ids)
+            loss = criterion(logits.view(-1, vocab_size), target_ids.view(-1))
+            loss.backward()
+            optimizer.step()
+
+            total_loss += loss.item()
+
+            # Collect token embedding info from a batch
+            with torch.no_grad():
+                embeddings = model.token_embedding(input_ids).cpu().numpy()
+                tokens = [tokenizer.decode([tok.item()]) for tok in input_ids[0]]
+                embedding_info = [
+                    {
+                        "token": tokens[i],
+                        "token_id": input_ids[0][i].item(),
+                        "embedding": embeddings[0][i].tolist()
+                    }
+                    for i in range(len(tokens))
+                ]
+
+        socketio.emit("training_status", {"epoch": epoch + 1, "loss": total_loss / len(dataloader)})
+
+    torch.save(model.state_dict(), "simple_gpt.pth")
+    socketio.emit("training_complete", {"message": "Training complete."})
+    socketio.emit("embedding_info", embedding_info)
+
+@app.route("/generate", methods=["POST"])
+def generate():
+    prompt = request.json.get("prompt", "")
+    generated = generate_text(model, prompt)
+    return jsonify({"generated_text": generated})
+
+@app.route("/list_models", methods=["GET"])
+def list_models():
+    model_files = [f for f in os.listdir('.') if f.endswith('.pth')]
+    return jsonify(model_files)
+
+@app.route("/test_prompt", methods=["POST"])
+def test_prompt():
+    data = request.get_json()
+    prompt = data.get("prompt")
+    model_file = data.get("model")
+
+    if not prompt or not model_file:
+        return jsonify({"error": "Prompt and model_file are required"}), 400
 
     try:
-        with open(file_path, "r", encoding="utf-8") as f:
-            raw_text = f.read()
+        model = SimpleGPT().to(device)
+        model.load_state_dict(torch.load(model_file, map_location="cpu"))
+        model.eval()
+
+        input_ids = torch.tensor(tokenizer.encode(prompt), dtype=torch.long).unsqueeze(0)
+        for _ in range(50):
+            if input_ids.size(1) > hyperparams["max_length"]:
+                input_ids = input_ids[:, -1*hyperparams["max_length"]:]
+            logits = model(input_ids)
+            next_token_logits = logits[:, -1, :]
+            probs = F.softmax(next_token_logits, dim=-1)
+            next_token = torch.multinomial(probs, num_samples=1)
+            input_ids = torch.cat([input_ids, next_token], dim=1)
+        generated_text = tokenizer.decode(input_ids[0].tolist())
+
+        return jsonify({"response": generated_text})
     except Exception as e:
-        return jsonify({"error": f"File read error: {str(e)}"}), 500
+        return jsonify({"error": str(e)}), 500
 
-    # Tokenizer-based vocabulary (token IDs)
-    token_ids = tokenizer.encode(raw_text)
-    unique_token_ids = sorted(set(token_ids))
-    decoded_tokens = [tokenizer.decode([tid]) for tid in unique_token_ids]
-
-    # Return raw text, decoded token vocab and token ids
-    return jsonify({
-        "raw_text": raw_text,
-        "vocab": decoded_tokens,
-        "token_ids": unique_token_ids,
-        "file_path": file_path
-    })
-
-
-
-@app.route('/create_dataloader', methods=['POST'])
-def create_dataloader():
-    file_path = request.form.get("file_path")
-    try:
-        with open(file_path, "r", encoding="utf-8") as f:
-            raw_text = f.read()
-    except Exception as e:
-        return jsonify({"error": f"Could not read file: {str(e)}"}), 500
-
-    dataloader = create_dataloader_v1(
-        raw_text,
-        batch_size=8,
-        max_length=4,
-        stride=4,
-        shuffle=False
-    )
-
-    dataloader_data = []
-    for batch_idx, batch in enumerate(dataloader):
-        inputs, targets = batch
-        inputs_list = inputs.tolist()
-        targets_list = targets.tolist()
-        decoded_inputs = [tokenizer.decode(input_id_seq) for input_id_seq in inputs_list]
-        decoded_targets = [tokenizer.decode(target_id_seq) for target_id_seq in targets_list]
-        dataloader_data.append({
-            "batch": batch_idx,
-            "input_ids": inputs_list,
-            "target_ids": targets_list,
-            "decoded_inputs":decoded_inputs,
-            "decoded_targets":decoded_targets
-        })
-        if batch_idx > 3:
-            break
-
-    # Tokenizer-based vocabulary
-    token_ids = tokenizer.encode(raw_text)
-    unique_token_ids = sorted(set(token_ids))
-    vocab_size = len(unique_token_ids)
-    print("vocab_size:", vocab_size)    
-    print("tokenizer.n_vocab:", tokenizer.n_vocab)
-    vocab_size = tokenizer.n_vocab
-    output_dim = 256
-
-    token_embedding_layer = torch.nn.Embedding(vocab_size, output_dim)
-    embeddings_weight = token_embedding_layer.weight.detach().tolist()
-
-    # Decode each token_id to a token string
-    decoded_tokens = [tokenizer.decode([tid]) for tid in unique_token_ids]
-
-    embeddings = []
-    for tok_str, vector in zip(decoded_tokens, embeddings_weight):
-        embeddings.append({
-            "token": tok_str,
-            "embedding": vector
-        })
-
-    return jsonify({
-        "dataloader": dataloader_data,
-        "embeddings": embeddings
-    })
-
-
-@app.route('/tokenize', methods=['POST'])
-def tokenize():
-    word = request.form.get("word", "")
-    if not word:
-        return jsonify({"error": "No word provided."}), 400
-    try:
-        # Tokenize the single word
-        token_ids = tokenizer.encode(word)
-        return jsonify({"token_ids": token_ids})
-    except Exception as e:
-        return jsonify({"error": f"Tokenization error: {str(e)}"}), 500
-
-
-if __name__ == '__main__':
-    app.run(debug=True)
+if __name__ == "__main__":
+    socketio.run(app, debug=True)
