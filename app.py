@@ -114,7 +114,7 @@ def training_loop():
 
         socketio.emit("training_status", {"epoch": str(epoch + 1)+"/"+str(hyperparams["epochs"]), "loss": total_loss / len(dataloader)})
 
-    torch.save(model.state_dict(), "simple_gpt.pth")
+    torch.save(model.state_dict(), "models/simple_gpt.pth")
     socketio.emit("training_complete", {"message": "Training complete."})
     socketio.emit("embedding_info", embedding_info)
 
@@ -126,7 +126,7 @@ def generate():
 
 @app.route("/list_models", methods=["GET"])
 def list_models():
-    model_files = [f for f in os.listdir('.') if f.endswith('.pth')]
+    model_files = [f for f in os.listdir('./models') if f.endswith('.pth')]
     return jsonify(model_files)
 
 @app.route("/test_prompt", methods=["POST"])
@@ -140,7 +140,7 @@ def test_prompt():
 
     try:
         model = SimpleGPT().to(device)
-        model.load_state_dict(torch.load(model_file, map_location="cpu"))
+        model.load_state_dict(torch.load("models/"+model_file, map_location="cpu"))
         model.eval()
 
         input_ids = torch.tensor(tokenizer.encode(prompt), dtype=torch.long).unsqueeze(0)
